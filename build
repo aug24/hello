@@ -1,0 +1,4 @@
+#!/bin/bash
+
+PATH="/usr/local/opt/gnu-tar/libexec/gnubin:$PATH"
+sudo fpm -v $1 -s dir -t deb -n demo usr etc
