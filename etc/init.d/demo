@@ -1,0 +1,23 @@
+#!/bin/bash
+  
+export GEM_HOME=/var/lib/gems/2.5.0/gems/
+cd /usr/lib/demo
+
+mkdir -p /var/log/demo/
+
+case "$1" in
+start)   echo "Implemented"
+         /usr/bin/ruby app.rb >> /var/log/demo/demo.log &
+         ;;
+stop)    process=$(ps -ewf | grep 'ruby' | grep 'app.rb' | awk '{print $2}')
+         kill $process
+         ;;
+restart) stop
+         start
+         ;;
+status)  ps -ef | grep 'ruby' | grep 'app.rb'
+         ;;
+*)       echo " Not implemented"
+         exit 2
+         ;;
+esac
