@@ -1,0 +1,1 @@
+aws --profile tcs --region eu-west-1 s3 cp ./demo_${1}_amd64.deb s3://tcs-repo/demo_${1}_amd64.deb
