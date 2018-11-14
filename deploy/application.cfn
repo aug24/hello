@@ -1,0 +1,437 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Parameters": {
+    "PublicPort": {
+      "Type": "String",
+      "Description": "The port on which the proxy will listen and healthcheck"
+    },
+    "PrivatePort": {
+      "Type": "String",
+      "Description": "The port to which the proxy will send requests"
+    },
+    "PingPath": {
+      "Type": "String",
+      "Description": "The path to ping for the elb healthcheck"
+    },
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "RepoBucketName": {
+      "Type": "String",
+      "Description": "The name of the bucket"
+    },
+    "PrivateSubnets": {
+      "Type": "List<AWS::EC2::Subnet::Id>",
+      "Description": "Subnet IDs in which the instances should be created"
+    },
+    "MinSize": {
+      "Type": "String",
+      "Description": "Min Size of Scaling Group",
+      "AllowedPattern": "[1-9][0-9]*"
+    },
+    "MaxSize": {
+      "Type": "String",
+      "Description": "Max Size of Scaling Group",
+      "AllowedPattern": "[1-9][0-9]*"
+    },
+    "Version": {
+      "Type": "String",
+      "Description": "Application Version",
+      "AllowedPattern": "[0-9.]+"
+    },
+    "Application": {
+      "Type": "String",
+      "Description": "Application Name"
+    },
+    "KeyName": {
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Description": "The name of the EC2 Keypair with which to create instances",
+      "Default": "launch"
+    },
+    "Ami": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Amazon Machine Image"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Description": "Type of EC2 instance to launch"
+    }
+  },
+  "Resources": {
+    "ELB": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+        "CrossZone": true,
+        "ConnectionDrainingPolicy": {
+          "Enabled": true,
+          "Timeout": "30"
+        },
+        "Listeners": [
+          {
+            "LoadBalancerPort": {
+              "Ref": "PublicPort"
+            },
+            "InstancePort": {
+              "Ref": "PrivatePort"
+            },
+            "Protocol": "HTTP"
+          }
+        ],
+        "Subnets": {
+          "Ref": "PrivateSubnets"
+        },
+        "SecurityGroups": [
+          {
+            "Fn::GetAtt": [
+              "SGELBApp",
+              "GroupId"
+            ]
+          }
+        ]
+      }
+    },
+    "SGELBApp": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "ELB inbound permissions",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "TCP",
+            "FromPort": {
+              "Ref": "PublicPort"
+            },
+            "ToPort": {
+              "Ref": "PublicPort"
+            },
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "SGHostApp": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Host inbound permissions",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "TCP",
+            "FromPort": {
+              "Ref": "PrivatePort"
+            },
+            "ToPort": {
+              "Ref": "PrivatePort"
+            },
+            "SourceSecurityGroupId": {
+              "Fn::GetAtt": [
+                "SGELBApp",
+                "GroupId"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "RepoS3Policy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "RepoS3Policy",
+        "PolicyDocument": {
+          "Id": "Policy",
+          "Statement": [
+            {
+              "Action": [
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:PutObject"
+              ],
+              "Sid": "ReadWriteAccess",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:s3:::",
+                      {
+                        "Ref": "RepoBucketName"
+                      },
+                      "/*"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:s3:::",
+                      {
+                        "Ref": "RepoBucketName"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2008-10-17"
+        },
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "SSMPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "SSMPolicy",
+        "PolicyDocument": {
+          "Id": "Policy",
+          "Statement": [
+            {
+              "Action": [
+                "ec2messages:AcknowledgeMessage",
+                "ec2messages:DeleteMessage",
+                "ec2messages:FailMessage",
+                "ec2messages:GetEndpoint",
+                "ec2messages:GetMessages",
+                "ec2messages:SendReply",
+                "ssm:UpdateInstanceInformation",
+                "ssm:ListInstanceAssociations",
+                "ssm:DescribeInstanceProperties",
+                "ssm:DescribeDocumentParameters"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2008-10-17"
+        },
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "SignalResourcePolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "SignalResourcePolicy",
+        "PolicyDocument": {
+          "Id": "Policy",
+          "Statement": [
+            {
+              "Action": [
+                "cloudformation:SignalResource"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2008-10-17"
+        },
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "DescribeInstancesPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "DescribeInstancesPolicy",
+        "PolicyDocument": {
+          "Id": "DescribeInstancesPolicy",
+          "Statement": [
+            {
+              "Action": [
+                "ec2:DescribeInstances"
+              ],
+              "Sid": "ReadWriteAccess",
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2008-10-17"
+        },
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "DescribeASGsPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyName": "DescribeASGsPolicy",
+        "PolicyDocument": {
+          "Id": "DescribeASGsPolicy",
+          "Statement": [
+            {
+              "Action": [
+                "autoscaling:DescribeAutoScalingGroups"
+              ],
+              "Sid": "ReadWriteAccess",
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2008-10-17"
+        },
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "ASG": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "LaunchConfigurationName": {
+          "Ref": "LaunchConfig"
+        },
+        "LoadBalancerNames": [
+          {
+            "Ref": "ELB"
+          }
+        ],
+        "MinSize": {
+          "Ref": "MinSize"
+        },
+        "MaxSize": {
+          "Ref": "MaxSize"
+        },
+        "TerminationPolicies": [
+          "OldestInstance"
+        ],
+        "HealthCheckGracePeriod": 900,
+        "VPCZoneIdentifier": {
+          "Ref": "PrivateSubnets"
+        },
+        "MetricsCollection": [
+          {
+            "Granularity": "1Minute"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Version",
+            "Value": {
+              "Ref": "Version"
+            },
+            "PropagateAtLaunch": true
+          },
+          {
+            "Key": "Application",
+            "Value": {
+              "Ref": "Application"
+            },
+            "PropagateAtLaunch": true
+          }
+        ]
+      },
+      "CreationPolicy": {
+        "AutoScalingCreationPolicy": {
+          "MinSuccessfulInstancesPercent": 100
+        },
+        "ResourceSignal": {
+          "Timeout": "PT20M",
+          "Count": {
+            "Ref": "MinSize"
+          }
+        }
+      },
+      "UpdatePolicy": {
+        "AutoScalingReplacingUpdate": {
+          "WillReplace": true
+        }
+      }
+    },
+    "InstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Id": "EIPManagementRole",
+          "Version": "2012-10-17",
+          "Statement": {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        }
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "LaunchConfig": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "ImageId": {
+          "Ref": "Ami"
+        },
+        "SecurityGroups": [
+          {
+            "Fn::GetAtt": [
+              "SGHostApp",
+              "GroupId"
+            ]
+          }
+        ],
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "InstanceProfile"
+        },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+              "VolumeType": "gp2",
+              "VolumeSize": 8
+            }
+          }
+        ],
+        "AssociatePublicIpAddress": "True",
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "\n#",
+              [
+                "#!/bin/bash\n\nexport DEBIAN_FRONTEND=noninteractive\n\n# Install jq and aws cli\napt-get update\napt-get install jq -qy\napt install awscli -qy\n\n# Find my instance id\nid=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)\n\n# Find my availablity zone\naz=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)\n\n# Find my region\nrg=${az::-1}\n\n# Find the ASG I'm in\nasg=$(aws --region $rg ec2 describe-instances --instance-id $id | jq -r \".Reservations[].Instances[]|select(.InstanceId==\\\"$id\\\")|.Tags[]|select(.Key==\\\"aws:autoscaling:groupName\\\")|.Value\") \n\n# Find the ASG's logical name\nlogicalname=$(aws --region $rg autoscaling describe-auto-scaling-groups --auto-scaling-group-name $asg | jq -r \".AutoScalingGroups[].Tags[]|select(.Key==\\\"aws:cloudformation:logical-id\\\")|.Value\") \n\n# Find the stack name\nstackname=$(aws --region $rg autoscaling describe-auto-scaling-groups --auto-scaling-group-name $asg | jq -r \".AutoScalingGroups[].Tags[]|select(.Key==\\\"aws:cloudformation:stack-name\\\")|.Value\")\n\n# Find the version tag on my asg\nversion=$(aws --region $rg autoscaling describe-auto-scaling-groups --auto-scaling-group-name $asg | jq -r \".AutoScalingGroups[].Tags[]|select(.Key==\\\"Version\\\")|.Value\") \n\n# Find the application tag on my asg\napplication=$(aws --region $rg autoscaling describe-auto-scaling-groups --auto-scaling-group-name $asg | jq -r \".AutoScalingGroups[].Tags[]|select(.Key==\\\"Application\\\")|.Value\") \n\n# Debug info:\ncat <<EOF\nid=$id\naz=$az\nrg=$rg\nasg=$asg \nlogicalname=$logicalname \nstackname=$stackname\nversion=$version \napplication=$application \nEOF\n\n\n\n# Hack: install ruby\napt-get install ruby -qy\n\n\n# Hack: install sinatra gem\ngem install sinatra\n\n\n\n\n# Copy in .deb file using tags\naws s3 cp s3://tcs-repo/${application}_${version}_amd64.deb /root\n\n# Install application\ndpkg -i /root/${application}_${version}_amd64.deb\n\n# Start application\n/etc/init.d/${application} start\n\n# Sleep 60\nsleep 60\n\n#Assume failure, then check for success\nstate=FAILURE\n\n# Signal I'm healthy if application is still up and returning 200 on the healthcheck\nif (/etc/init.d/${application} status); then\n  responsecode=$(curl -s -o /dev/null -w \"%{http_code}\" http://localhost/healthcheck)\n  if [[ $responsecode -eq 200 ]]; then\n    state=SUCCESS\n  fi\nfi\n\naws --region eu-west-1 cloudformation signal-resource --stack-name $stackname --logical-resource-id $logicalname --unique-id $id --status $state\n\n",
+                {
+                  "Ref": "Version"
+                }
+              ]
+            ]
+          }
+        }
+      }
+    }
+  }
+}
